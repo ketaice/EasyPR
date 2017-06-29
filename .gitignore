@@ -1,19 +1,23 @@
 .idea/
 _build/
 resources/image/tmp/
+*.lib
 *.suo
 *.sdf
 *.opensdf
 *.exe
 *.dll
 *.ilk
-*.lib
 *.pdb
-demo
 experi
 /tmp
-
-
+resources/image/native_test/*.jpg
+resources/image/native_test/cars
+resources/image/native_test/*.py
+resources/image/phone_test
+*.vsp
+*.psess
+*.DS_Store
 #ignore thumbnails created by windows
 Thumbs.db
 #Ignore files build by Visual Studio
@@ -27,10 +31,14 @@ Thumbs.db
 *.tlb
 *.tlh
 *.bak
-[Bb]in
 [Dd]ebug*/
 *.sbr
 obj/
 [Rr]elease*/
 _ReSharper*/
 [Tt]est[Rr]esult*
+
+*.obj
+*.cache
+*.log
+

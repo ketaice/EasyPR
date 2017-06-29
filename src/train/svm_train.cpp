@@ -1,11 +1,12 @@
 #include "easypr/train/svm_train.h"
-#include "easypr/core/feature.h"
 #include "easypr/util/util.h"
+#include "easypr/config.h"
 
 #ifdef OS_WINDOWS
 #include <ctime>
 #endif
 
+using namespace cv;
 using namespace cv::ml;
 
 namespace easypr {
@@ -14,6 +15,8 @@ SvmTrain::SvmTrain(const char* plates_folder, const char* xml)
     : plates_folder_(plates_folder), svm_xml_(xml) {
   assert(plates_folder);
   assert(xml);
+
+  extractFeature = getHistomPlusColoFeatures;
 }
 
 void SvmTrain::train() {
@@ -27,37 +30,47 @@ void SvmTrain::train() {
   svm_->setC(1);
   svm_->setNu(0.1);
   svm_->setP(0.1);
-  svm_->setTermCriteria(cvTermCriteria(CV_TERMCRIT_ITER, 100000, 0.00001));
+  svm_->setTermCriteria(cvTermCriteria(CV_TERMCRIT_ITER, 20000, 0.0001));
 
+  this->prepare();
+
+  if (train_file_list_.size() == 0) {
+    fprintf(stdout, "No file found in the train folder!\n");
+    fprintf(stdout, "You should create a folder named \"tmp\" in EasyPR main folder.\n");
+    fprintf(stdout, "Copy train data folder(like \"SVM\") under \"tmp\". \n");
+    return;
+  }
   auto train_data = tdata();
 
   fprintf(stdout, ">> Training SVM model, please wait...\n");
   long start = utils::getTimestamp();
-  //svm_->trainAuto(train_data, 10, SVM::getDefaultGrid(SVM::C),
-  //                SVM::getDefaultGrid(SVM::GAMMA), SVM::getDefaultGrid(SVM::P),
-  //                SVM::getDefaultGrid(SVM::NU), SVM::getDefaultGrid(SVM::COEF),
-  //                SVM::getDefaultGrid(SVM::DEGREE), true);
-  svm_->train(train_data);
+  svm_->trainAuto(train_data, 10, SVM::getDefaultGrid(SVM::C),
+                  SVM::getDefaultGrid(SVM::GAMMA), SVM::getDefaultGrid(SVM::P),
+                  SVM::getDefaultGrid(SVM::NU), SVM::getDefaultGrid(SVM::COEF),
+                  SVM::getDefaultGrid(SVM::DEGREE), true);
+  //svm_->train(train_data);
 
   long end = utils::getTimestamp();
   fprintf(stdout, ">> Training done. Time elapse: %ldms\n", end - start);
   fprintf(stdout, ">> Saving model file...\n");
   svm_->save(svm_xml_);
+
   fprintf(stdout, ">> Your SVM Model was saved to %s\n", svm_xml_);
   fprintf(stdout, ">> Testing...\n");
-  this->test();
 
+  this->test();
+  
 }
 
 void SvmTrain::test() {
   // 1.4 bug fix: old 1.4 ver there is no null judge
-  if (NULL == svm_)
-    svm_ = cv::ml::SVM::load<cv::ml::SVM>(svm_xml_);
+  // if (NULL == svm_)
+  LOAD_SVM_MODEL(svm_, svm_xml_);
 
   if (test_file_list_.empty()) {
     this->prepare();
   }
-
+ 
   double count_all = test_file_list_.size();
   double ptrue_rtrue = 0;
   double ptrue_rfalse = 0;
@@ -67,16 +80,15 @@ void SvmTrain::test() {
   for (auto item : test_file_list_) {
     auto image = cv::imread(item.file);
     if (!image.data) {
-      
       std::cout << "no" << std::endl;
       continue;
     }
     cv::Mat feature;
-    getHistogramFeatures(image, feature);
-
-    //std::cout << "predict: " << result << std::endl;
+    extractFeature(image, feature);
 
     auto predict = int(svm_->predict(feature));
+    //std::cout << "predict: " << predict << std::endl;
+
     auto real = item.label;
     if (predict == kForward && real == kForward) ptrue_rtrue++;
     if (predict == kForward && real == kInverse) ptrue_rfalse++;
@@ -123,52 +135,40 @@ void SvmTrain::prepare() {
 
   char buffer[260] = {0};
 
-  sprintf(buffer, "%s/has", plates_folder_);
-  auto has_file_list = utils::getFiles(buffer);
-  std::random_shuffle(has_file_list.begin(), has_file_list.end());
+  sprintf(buffer, "%s/has/train", plates_folder_);
+  auto has_file_train_list = utils::getFiles(buffer);
+  std::random_shuffle(has_file_train_list.begin(), has_file_train_list.end());
 
-  sprintf(buffer, "%s/no", plates_folder_);
-  auto no_file_list = utils::getFiles(buffer);
-  std::random_shuffle(no_file_list.begin(), no_file_list.end());
+  sprintf(buffer, "%s/has/test", plates_folder_);
+  auto has_file_test_list = utils::getFiles(buffer);
+  std::random_shuffle(has_file_test_list.begin(), has_file_test_list.end());
 
-  auto has_num = has_file_list.size();
-  auto no_num = no_file_list.size();
+  sprintf(buffer, "%s/no/train", plates_folder_);
+  auto no_file_train_list = utils::getFiles(buffer);
+  std::random_shuffle(no_file_train_list.begin(), no_file_train_list.end());
+
+  sprintf(buffer, "%s/no/test", plates_folder_);
+  auto no_file_test_list = utils::getFiles(buffer);
+  std::random_shuffle(no_file_test_list.begin(), no_file_test_list.end());
 
   fprintf(stdout, ">> Collecting train data...\n");
 
-  auto has_for_train = static_cast<int>(has_num * kSvmPercentage);
-  auto no_for_train = static_cast<int>(no_num * kSvmPercentage);
+  for (auto file : has_file_train_list)
+    train_file_list_.push_back({ file, kForward });
 
-  // copy kSvmPercentage of has_file_list to train_file_list_
-  train_file_list_.reserve(has_for_train + no_for_train);
-  for (auto i = 0; i < has_for_train; i++) {
-    train_file_list_.push_back({has_file_list[i], kForward});
-  }
-  // copy kSvmPercentage of no_file_list to the end of train_file_list_
-  for (auto i = 0; i < no_for_train; i++) {
-    train_file_list_.push_back({no_file_list[i], kInverse});
-  }
+  for (auto file : no_file_train_list)
+    train_file_list_.push_back({ file, kInverse });
 
   fprintf(stdout, ">> Collecting test data...\n");
 
-  auto has_for_test = has_num - has_for_train;
-  auto no_for_test = no_num - no_for_train;
+  for (auto file : has_file_test_list)
+    test_file_list_.push_back({ file, kForward });
 
-  // copy the rest of has_file_list to the test_file_list_
-  test_file_list_.reserve(has_for_test + no_for_test);
-  for (auto i = has_for_train; i < has_num; i++) {
-    test_file_list_.push_back({has_file_list[i], kForward});
-  }
-
-  // copy the rest of no_file_list to the end of the test_file_list_
-  for (auto i = no_for_train; i < no_num; i++) {
-    test_file_list_.push_back({no_file_list[i], kInverse});
-  }
+  for (auto file : no_file_test_list)
+    test_file_list_.push_back({ file, kInverse });
 }
 
 cv::Ptr<cv::ml::TrainData> SvmTrain::tdata() {
-  this->prepare();
-
   cv::Mat samples;
   std::vector<int> responses;
 
@@ -179,7 +179,7 @@ cv::Ptr<cv::ml::TrainData> SvmTrain::tdata() {
       continue;
     }
     cv::Mat feature;
-    getHistogramFeatures(image, feature);
+    extractFeature(image, feature);
     feature = feature.reshape(1, 1);
 
     samples.push_back(feature);
@@ -190,8 +190,7 @@ cv::Ptr<cv::ml::TrainData> SvmTrain::tdata() {
   samples.convertTo(samples_, CV_32FC1);
   cv::Mat(responses).copyTo(responses_);
 
-  return cv::ml::TrainData::create(samples_, cv::ml::SampleTypes::ROW_SAMPLE,
-                                   responses_);
+  return cv::ml::TrainData::create(samples_, cv::ml::SampleTypes::ROW_SAMPLE, responses_);
 }
 
 }  // namespace easypr
